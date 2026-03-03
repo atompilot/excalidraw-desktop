@@ -89,7 +89,7 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          DMG_SOURCE=$(find desktop-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
+          DMG_SOURCE=$(find desktop-app/src-tauri/target -path "*/bundle/dmg/*.dmg" | head -1)
           DMG_DEST="Excalidraw_${VERSION}_universal.dmg"
           cp "$DMG_SOURCE" "$DMG_DEST"
           echo "dmg_path=$DMG_DEST" >> $GITHUB_OUTPUT
