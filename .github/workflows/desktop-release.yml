@@ -41,7 +41,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install Node dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install
 
       - name: Import Apple certificate
         env:
