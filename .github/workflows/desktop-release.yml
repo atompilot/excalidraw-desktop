@@ -1,0 +1,117 @@
+name: Desktop App Release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop-app/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('desktop-app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Node dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Import Apple certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import /tmp/cert.p12 -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "" build.keychain
+
+          rm /tmp/cert.p12
+
+      - name: Detect signing identity
+        id: identity
+        run: |
+          SIGN_IDENTITY=$(security find-identity -v -p codesigning build.keychain \
+            | grep 'Developer ID Application' | head -1 \
+            | sed -E 's/.*"(Developer ID Application: [^"]+)".*/\1/')
+          echo "Detected: $SIGN_IDENTITY"
+          echo "identity=$SIGN_IDENTITY" >> $GITHUB_OUTPUT
+
+      - name: Build Universal Binary .dmg
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.identity.outputs.identity }}
+          APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.NOTARIZE_APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: "D9V25D8RBJ"
+        run: |
+          yarn --cwd ./desktop-app exec tauri build \
+            --target universal-apple-darwin \
+            --bundles dmg
+
+      - name: Prepare release artifact
+        id: artifact
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/desktop-v}"
+          else
+            VERSION=$(jq -r '.version' desktop-app/src-tauri/tauri.conf.json)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          DMG_SOURCE=$(find desktop-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
+          DMG_DEST="Excalidraw_${VERSION}_universal.dmg"
+          cp "$DMG_SOURCE" "$DMG_DEST"
+          echo "dmg_path=$DMG_DEST" >> $GITHUB_OUTPUT
+
+      - name: Create Draft Release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: "Excalidraw Desktop v${{ steps.artifact.outputs.version }}"
+          files: ${{ steps.artifact.outputs.dmg_path }}
+          generate_release_notes: true
+
+      - name: Upload artifact (for manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/desktop-v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: Excalidraw-${{ steps.artifact.outputs.version }}-universal.dmg
+          path: ${{ steps.artifact.outputs.dmg_path }}
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain build.keychain 2>/dev/null || true
