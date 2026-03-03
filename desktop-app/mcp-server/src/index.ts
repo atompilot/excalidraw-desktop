@@ -8,6 +8,7 @@ import { registerEditTool } from "./tools/edit.js";
 import { registerDeleteTool } from "./tools/delete.js";
 import { registerExportTool } from "./tools/export.js";
 import { registerOpenTool } from "./tools/open.js";
+import { registerAnnotationsTool } from "./tools/annotations.js";
 
 const server = new McpServer({
   name: "excalidraw-mcp-server",
@@ -22,6 +23,7 @@ registerEditTool(server);
 registerDeleteTool(server);
 registerExportTool(server);
 registerOpenTool(server);
+registerAnnotationsTool(server);
 
 // Start server with stdio transport
 async function main() {

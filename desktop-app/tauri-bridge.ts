@@ -139,6 +139,45 @@ export const mcpSetCurrentFile = (filepath: string | null): Promise<void> => {
   return invoke("mcp_set_current_file", { filepath });
 };
 
+// --- Clipboard ---
+
+export const copyToClipboard = (text: string): Promise<void> => {
+  return invoke("copy_to_clipboard", { text });
+};
+
+// --- Screenshot ---
+
+export const captureInteractive = (outputPath: string): Promise<string> => {
+  return invoke<string>("capture_interactive", { outputPath });
+};
+
+// --- Custom Templates ---
+
+export interface CustomTemplate {
+  id: string;
+  name: string;
+  category: string;
+  data: string;
+  created_at: number;
+}
+
+export const saveCustomTemplate = (
+  id: string,
+  name: string,
+  category: string,
+  data: string,
+): Promise<void> => {
+  return invoke("save_custom_template", { id, name, category, data });
+};
+
+export const getCustomTemplates = (): Promise<CustomTemplate[]> => {
+  return invoke<CustomTemplate[]>("get_custom_templates");
+};
+
+export const deleteCustomTemplate = (id: string): Promise<void> => {
+  return invoke("delete_custom_template", { id });
+};
+
 // --- Session State ---
 
 export interface SessionState {

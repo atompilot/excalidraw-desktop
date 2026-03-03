@@ -111,6 +111,15 @@ export const FONT_METADATA: Record<number, FontMetadata> = {
     },
     private: true,
   },
+  [FONT_FAMILY["system-ui"]]: {
+    metrics: {
+      unitsPerEm: 2048,
+      ascender: 1577,
+      descender: -471,
+      lineHeight: 1.15,
+    },
+    local: true,
+  },
   [FONT_FAMILY_FALLBACKS.Xiaolai]: {
     metrics: {
       unitsPerEm: 1000,

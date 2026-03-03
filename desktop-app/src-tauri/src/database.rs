@@ -26,6 +26,13 @@ impl Database {
                 path TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 timestamp INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS custom_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'custom',
+                data TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );",
         )
         .map_err(|e| format!("Failed to create tables: {e}"))?;

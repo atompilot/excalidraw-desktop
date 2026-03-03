@@ -9497,6 +9497,7 @@ __metadata:
     jotai: "npm:2.11.0"
     react: "npm:19.0.0"
     react-dom: "npm:19.0.0"
+    vite: "npm:5.0.12"
     vite-plugin-html: "npm:3.2.2"
   languageName: unknown
   linkType: soft

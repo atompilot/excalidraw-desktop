@@ -64,6 +64,7 @@ import {
   isImageElement,
 } from "./typeChecks";
 import { getContainingFrame } from "./frame";
+import { renderMarkdownOnCanvas } from "./markdownRenderer";
 import { getCornerRadius } from "./utils";
 
 import { ShapeCache } from "./shape";
@@ -384,6 +385,55 @@ const drawImagePlaceholder = (
   );
 };
 
+const drawPlainText = (
+  element: ExcalidrawTextElement,
+  context: CanvasRenderingContext2D,
+  renderConfig: StaticCanvasRenderConfig,
+) => {
+  const rtl = isRTL(element.text);
+  const shouldTemporarilyAttach = rtl && !context.canvas.isConnected;
+  if (shouldTemporarilyAttach) {
+    document.body.appendChild(context.canvas);
+  }
+  context.canvas.setAttribute("dir", rtl ? "rtl" : "ltr");
+  context.save();
+  context.font = getFontString(element);
+  context.fillStyle =
+    renderConfig.theme === THEME.DARK
+      ? applyDarkModeFilter(element.strokeColor)
+      : element.strokeColor;
+  context.textAlign = element.textAlign as CanvasTextAlign;
+
+  const lines = element.text.replace(/\r\n?/g, "\n").split("\n");
+
+  const horizontalOffset =
+    element.textAlign === "center"
+      ? element.width / 2
+      : element.textAlign === "right"
+      ? element.width
+      : 0;
+
+  const lineHeightPx = getLineHeightInPx(element.fontSize, element.lineHeight);
+
+  const verticalOffset = getVerticalOffset(
+    element.fontFamily,
+    element.fontSize,
+    lineHeightPx,
+  );
+
+  for (let index = 0; index < lines.length; index++) {
+    context.fillText(
+      lines[index],
+      horizontalOffset,
+      index * lineHeightPx + verticalOffset,
+    );
+  }
+  context.restore();
+  if (shouldTemporarilyAttach) {
+    context.canvas.remove();
+  }
+};
+
 const drawElementOnCanvas = (
   element: NonDeletedExcalidrawElement,
   rc: RoughCanvas,
@@ -545,54 +595,37 @@ const drawElementOnCanvas = (
     }
     default: {
       if (isTextElement(element)) {
-        const rtl = isRTL(element.text);
-        const shouldTemporarilyAttach = rtl && !context.canvas.isConnected;
-        if (shouldTemporarilyAttach) {
-          // to correctly render RTL text mixed with LTR, we have to append it
-          // to the DOM
-          document.body.appendChild(context.canvas);
-        }
-        context.canvas.setAttribute("dir", rtl ? "rtl" : "ltr");
-        context.save();
-        context.font = getFontString(element);
-        context.fillStyle =
-          renderConfig.theme === THEME.DARK
-            ? applyDarkModeFilter(element.strokeColor)
-            : element.strokeColor;
-        context.textAlign = element.textAlign as CanvasTextAlign;
+        // Markdown rendering: use SVG foreignObject → canvas drawImage
+        if (element.customData?.markdown === true) {
+          const color =
+            renderConfig.theme === THEME.DARK
+              ? applyDarkModeFilter(element.strokeColor)
+              : element.strokeColor;
 
-        // Canvas does not support multiline text by default
-        const lines = element.text.replace(/\r\n?/g, "\n").split("\n");
-
-        const horizontalOffset =
-          element.textAlign === "center"
-            ? element.width / 2
-            : element.textAlign === "right"
-            ? element.width
-            : 0;
-
-        const lineHeightPx = getLineHeightInPx(
-          element.fontSize,
-          element.lineHeight,
-        );
-
-        const verticalOffset = getVerticalOffset(
-          element.fontFamily,
-          element.fontSize,
-          lineHeightPx,
-        );
-
-        for (let index = 0; index < lines.length; index++) {
-          context.fillText(
-            lines[index],
-            horizontalOffset,
-            index * lineHeightPx + verticalOffset,
+          context.save();
+          const rendered = renderMarkdownOnCanvas(
+            context,
+            element.originalText,
+            element.width,
+            element.height,
+            element.fontSize,
+            color,
+            element.textAlign,
+            renderConfig.theme,
           );
+
+          if (!rendered) {
+            // Async render pending — fall through to plain text rendering
+            context.restore();
+            // Draw plain text as fallback while markdown image loads
+            drawPlainText(element, context, renderConfig);
+          } else {
+            context.restore();
+          }
+          break;
         }
-        context.restore();
-        if (shouldTemporarilyAttach) {
-          context.canvas.remove();
-        }
+
+        drawPlainText(element, context, renderConfig);
       } else {
         throw new Error(`Unimplemented type ${element.type}`);
       }

@@ -2,9 +2,12 @@ mod commands;
 mod database;
 mod mcp_http;
 
+use commands::clipboard::copy_to_clipboard;
 use commands::file_io::{get_auto_save_path, read_file, write_file};
 use commands::recent_files::{add_recent_file, clear_recent_files, get_recent_files};
+use commands::screenshot::capture_interactive;
 use commands::session_state::{get_session_state, set_session_state};
+use commands::templates::{delete_custom_template, get_custom_templates, save_custom_template};
 use database::Database;
 use mcp_http::{mcp_export_complete, mcp_set_current_file, write_binary_file, McpState};
 use std::sync::Arc;
@@ -41,6 +44,11 @@ pub fn run() {
             mcp_set_current_file,
             get_session_state,
             set_session_state,
+            capture_interactive,
+            save_custom_template,
+            get_custom_templates,
+            delete_custom_template,
+            copy_to_clipboard,
         ])
         .setup(|app| {
             // Initialize SQLite database

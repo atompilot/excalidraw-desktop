@@ -6,7 +6,12 @@ import {
   useEditorInterface,
   exportToCanvas,
 } from "@excalidraw/excalidraw";
-import { EVENT, THEME, resolvablePromise } from "@excalidraw/common";
+import {
+  EVENT,
+  FONT_FAMILY,
+  THEME,
+  resolvablePromise,
+} from "@excalidraw/common";
 import {
   CommandPalette,
   DEFAULT_CATEGORIES,
@@ -32,9 +37,14 @@ import polyfill from "@excalidraw/excalidraw/polyfill";
 import { isElementLink } from "@excalidraw/element";
 import { newElementWith } from "@excalidraw/element";
 import { isInitializedImageElement } from "@excalidraw/element";
+import {
+  setOnMarkdownRendered,
+  elementWithCanvasCache,
+} from "@excalidraw/element";
 import CustomStats from "excalidraw-app/CustomStats";
 import { updateStaleImageStatuses } from "excalidraw-app/data/FileManager";
 import { useHandleAppTheme } from "excalidraw-app/useHandleAppTheme";
+import { randomId } from "@excalidraw/common/random";
 import "excalidraw-app/index.scss";
 
 import type { RestoredDataState } from "@excalidraw/excalidraw/data/restore";
@@ -55,6 +65,16 @@ import type { ResolvablePromise } from "@excalidraw/common/utils";
 import { Provider, useAtomValue, appJotaiStore } from "./app-jotai";
 import { useAppLangCode } from "./app-language/language-state";
 import {
+  createAnnotation,
+  generateAnnotationSummary,
+  getAnnotationElementIds,
+  syncCounterFromScene,
+} from "./annotation-mode";
+import { sendToClaudeCode } from "./claude-code-bridge";
+import { AnnotationToolbar } from "./components/AnnotationToolbar";
+import { DimensionOverlay } from "./components/DimensionOverlay";
+import { UITemplatesSidebar } from "./components/UITemplatesSidebar";
+import {
   LibraryIndexedDBAdapter,
   LibraryLocalStorageMigrationAdapter,
   LocalData,
@@ -62,6 +82,12 @@ import {
 } from "./data/LocalData";
 import { importFromLocalStorage } from "./data/localStorage";
 import { DesktopMainMenu } from "./DesktopMainMenu";
+import {
+  getDimensionInfo,
+  computeGaps,
+  solidifyDimension,
+  solidifyGap,
+} from "./dimension-utils";
 import {
   readFile,
   writeFile,
@@ -76,6 +102,9 @@ import {
   mcpSetCurrentFile,
   getSessionState,
   setSessionState,
+  captureInteractive,
+  saveCustomTemplate,
+  copyToClipboard,
 } from "./tauri-bridge";
 
 polyfill();
@@ -108,6 +137,13 @@ const ExcalidrawWrapper = () => {
   const isModifiedRef = useRef(false);
 
   const savedSignatureRef = useRef<string>("");
+
+  // Annotation mode state
+  const [annotationMode, setAnnotationMode] = useState(false);
+  const [annotationCount, setAnnotationCount] = useState(0);
+
+  // Dimension overlay state
+  const [showDimensions, setShowDimensions] = useState(false);
 
   // Keep refs in sync
   useEffect(() => {
@@ -264,12 +300,21 @@ const ExcalidrawWrapper = () => {
     }
 
     const localDataState = importFromLocalStorage();
+    const restoredAppState = restoreAppState(localDataState?.appState, null);
     const scene: ExcalidrawInitialDataState = {
       elements: restoreElements(localDataState?.elements, null, {
         repairBindings: true,
         deleteInvisibleElements: true,
       }),
-      appState: restoreAppState(localDataState?.appState, null),
+      appState: {
+        ...restoredAppState,
+        // Default to system-ui for desktop app (override old Excalifont default)
+        currentItemFontFamily:
+          !localDataState?.appState ||
+          restoredAppState.currentItemFontFamily === FONT_FAMILY.Excalifont
+            ? FONT_FAMILY["system-ui"]
+            : restoredAppState.currentItemFontFamily,
+      },
     };
 
     // Load images from IndexedDB
@@ -363,34 +408,6 @@ const ExcalidrawWrapper = () => {
     return () => clearInterval(interval);
   }, [excalidrawAPI]);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const ctrlOrCmd = e.metaKey || e.ctrlKey;
-      if (ctrlOrCmd && e.key === "o") {
-        e.preventDefault();
-        e.stopPropagation();
-        openFile();
-      } else if (ctrlOrCmd && e.shiftKey && e.key === "s") {
-        e.preventDefault();
-        e.stopPropagation();
-        saveFileAs();
-      } else if (ctrlOrCmd && e.key === "s") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (currentFilePathRef.current) {
-          saveFile();
-        } else {
-          saveFileAs();
-        }
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown, { capture: true });
-    return () =>
-      window.removeEventListener("keydown", handleKeyDown, { capture: true });
-  }, [openFile, saveFile, saveFileAs]);
-
   // Unload handler
   useEffect(() => {
     const onUnload = () => {
@@ -403,6 +420,27 @@ const ExcalidrawWrapper = () => {
       window.removeEventListener(EVENT.BEFORE_UNLOAD, onUnload, false);
     };
   }, []);
+
+  // Connect markdown renderer callback to invalidate canvas cache
+  useEffect(() => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    setOnMarkdownRendered(() => {
+      // Invalidate canvas cache for markdown text elements
+      const elements = excalidrawAPI.getSceneElements();
+      for (const el of elements) {
+        if (el.type === "text" && el.customData?.markdown === true) {
+          elementWithCanvasCache.delete(el);
+        }
+      }
+      // Trigger a scene update to re-render
+      excalidrawAPI.updateScene({
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+    });
+    return () => setOnMarkdownRendered(null);
+  }, [excalidrawAPI]);
 
   // Sync current file path to MCP HTTP server
   useEffect(() => {
@@ -520,12 +558,49 @@ const ExcalidrawWrapper = () => {
   // Copy file path to clipboard
   const copyFilePath = useCallback(() => {
     if (currentFilePathRef.current) {
-      navigator.clipboard.writeText(currentFilePathRef.current);
+      copyToClipboard(currentFilePathRef.current);
       excalidrawAPI?.setToast({
         message: `Path copied: ${currentFilePathRef.current}`,
       });
     } else {
       excalidrawAPI?.setToast({ message: "No file path (unsaved file)" });
+    }
+  }, [excalidrawAPI]);
+
+  // Toggle markdown rendering for selected text elements
+  const toggleMarkdown = useCallback(() => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    const state = excalidrawAPI.getAppState();
+    const selectedIds = Object.keys(state.selectedElementIds || {}).filter(
+      (id) => state.selectedElementIds[id],
+    );
+    if (selectedIds.length === 0) {
+      return;
+    }
+
+    const elements = excalidrawAPI.getSceneElementsIncludingDeleted();
+    let toggled = 0;
+    const updatedElements = elements.map((el) => {
+      if (selectedIds.includes(el.id) && el.type === "text") {
+        const isMarkdown = el.customData?.markdown === true;
+        toggled++;
+        return newElementWith(el, {
+          customData: { ...el.customData, markdown: !isMarkdown },
+        });
+      }
+      return el;
+    });
+
+    if (toggled > 0) {
+      excalidrawAPI.updateScene({
+        elements: updatedElements,
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      excalidrawAPI.setToast({
+        message: `Toggled markdown on ${toggled} element(s)`,
+      });
     }
   }, [excalidrawAPI]);
 
@@ -542,22 +617,424 @@ const ExcalidrawWrapper = () => {
       excalidrawAPI.setToast({ message: "No elements selected" });
       return;
     }
-    navigator.clipboard.writeText(selectedIds.join(", "));
+    copyToClipboard(selectedIds.join(", "));
     excalidrawAPI.setToast({
       message: `Copied ${selectedIds.length} element ID(s)`,
     });
   }, [excalidrawAPI]);
+
+  // --- Annotation Mode actions ---
+
+  const toggleAnnotationMode = useCallback(() => {
+    setAnnotationMode((prev) => {
+      if (!prev && excalidrawAPI) {
+        // Entering annotation mode — sync counter
+        syncCounterFromScene(excalidrawAPI.getSceneElements());
+      }
+      return !prev;
+    });
+  }, [excalidrawAPI]);
+
+  const addAnnotation = useCallback(() => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    const appState = excalidrawAPI.getAppState();
+    const cx = -appState.scrollX + appState.width / 2 / appState.zoom.value;
+    const cy = -appState.scrollY + appState.height / 2 / appState.zoom.value;
+
+    syncCounterFromScene(excalidrawAPI.getSceneElements());
+    const newElements = createAnnotation(cx, cy);
+    const existing = excalidrawAPI.getSceneElementsIncludingDeleted();
+    excalidrawAPI.updateScene({
+      elements: [...existing, ...newElements],
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    });
+
+    // Update count
+    setAnnotationCount(
+      getAnnotationElementIds([...existing, ...newElements]).length,
+    );
+  }, [excalidrawAPI]);
+
+  const exportAnnotationSummary = useCallback(() => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    const elements = excalidrawAPI.getSceneElements();
+    const fileName = currentFilePathRef.current
+      ? currentFilePathRef.current.split(/[/\\]/).pop()
+      : undefined;
+    const { markdown, items } = generateAnnotationSummary(elements, fileName);
+
+    if (items.length === 0) {
+      excalidrawAPI.setToast({ message: "No annotations found" });
+      return;
+    }
+    copyToClipboard(markdown);
+    excalidrawAPI.setToast({
+      message: `Copied ${items.length} annotation(s) to clipboard`,
+    });
+  }, [excalidrawAPI]);
+
+  const clearAnnotations = useCallback(() => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    const elements = excalidrawAPI.getSceneElementsIncludingDeleted();
+    const ids = getAnnotationElementIds(elements);
+    if (ids.length === 0) {
+      return;
+    }
+    const updated = elements.map((el) =>
+      ids.includes(el.id) ? newElementWith(el, { isDeleted: true }) : el,
+    );
+    excalidrawAPI.updateScene({
+      elements: updated,
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    });
+    setAnnotationCount(0);
+    excalidrawAPI.setToast({ message: `Cleared ${ids.length} annotation(s)` });
+  }, [excalidrawAPI]);
+
+  // --- Dimension overlay actions ---
+
+  const toggleDimensions = useCallback(() => {
+    setShowDimensions((prev) => !prev);
+  }, []);
+
+  const solidifyDimensions = useCallback(() => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    const appState = excalidrawAPI.getAppState();
+    const selectedIds = Object.keys(appState.selectedElementIds || {}).filter(
+      (id) => appState.selectedElementIds[id],
+    );
+    const allElements = excalidrawAPI.getSceneElements();
+    const selected = allElements.filter(
+      (el) => selectedIds.includes(el.id) && !el.isDeleted,
+    );
+    if (selected.length === 0) {
+      return;
+    }
+
+    const newElements: any[] = [];
+    for (const el of selected) {
+      newElements.push(...solidifyDimension(getDimensionInfo(el)));
+    }
+    if (selected.length >= 2) {
+      for (const gap of computeGaps(selected)) {
+        newElements.push(...solidifyGap(gap));
+      }
+    }
+
+    const existing = excalidrawAPI.getSceneElementsIncludingDeleted();
+    excalidrawAPI.updateScene({
+      elements: [...existing, ...newElements],
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    });
+    excalidrawAPI.setToast({
+      message: `Solidified ${newElements.length} dimension element(s)`,
+    });
+  }, [excalidrawAPI]);
+
+  // --- Screenshot & Send to Claude Code ---
+
+  const captureScreenshot = useCallback(async () => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    try {
+      const ts = Date.now();
+      const outputPath = `/tmp/excalidraw-capture-${ts}.png`;
+      const path = await captureInteractive(outputPath);
+
+      // Read the captured PNG and import as image
+      const response = await fetch(`asset://localhost/${path}`).catch(
+        () => null,
+      );
+      if (!response) {
+        // Fallback: just notify
+        excalidrawAPI.setToast({ message: `Screenshot saved: ${path}` });
+        return;
+      }
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      const uint8 = new Uint8Array(arrayBuffer);
+
+      // Create data URL
+      let binary = "";
+      for (let i = 0; i < uint8.length; i++) {
+        binary += String.fromCharCode(uint8[i]);
+      }
+      const dataUrl = `data:image/png;base64,${btoa(binary)}` as any;
+      const fileId = randomId() as any;
+
+      // Add file
+      excalidrawAPI.addFiles([
+        {
+          id: fileId,
+          dataURL: dataUrl,
+          mimeType: "image/png",
+          created: Date.now(),
+          lastRetrieved: Date.now(),
+        },
+      ]);
+
+      // Get viewport center
+      const appState = excalidrawAPI.getAppState();
+      const cx = -appState.scrollX + appState.width / 2 / appState.zoom.value;
+      const cy = -appState.scrollY + appState.height / 2 / appState.zoom.value;
+
+      // Create image element
+      const imgEl: any = {
+        id: randomId(),
+        type: "image",
+        x: cx - 200,
+        y: cy - 150,
+        width: 400,
+        height: 300,
+        fileId,
+        status: "saved",
+        isDeleted: false,
+        roughness: 0,
+        opacity: 100,
+        customData: { screenshot: true, sourcePath: path },
+        seed: Math.floor(Math.random() * 2000000000),
+        version: 1,
+        versionNonce: Math.floor(Math.random() * 2000000000),
+      };
+
+      const existing = excalidrawAPI.getSceneElementsIncludingDeleted();
+      excalidrawAPI.updateScene({
+        elements: [...existing, imgEl],
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      excalidrawAPI.setToast({ message: "Screenshot imported to canvas" });
+    } catch (err: any) {
+      if (err.message?.includes("cancelled")) {
+        // User cancelled, do nothing
+        return;
+      }
+      console.error("Screenshot failed:", err);
+      excalidrawAPI.setToast({
+        message: `Screenshot failed: ${err.message || "Unknown error"}`,
+      });
+    }
+  }, [excalidrawAPI]);
+
+  const handleSendToClaudeCode = useCallback(async () => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    try {
+      const { pngPath } = await sendToClaudeCode(excalidrawAPI);
+      excalidrawAPI.setToast({
+        message: `Exported to ${pngPath} — prompt copied to clipboard`,
+      });
+    } catch (err: any) {
+      console.error("Send to Claude Code failed:", err);
+      excalidrawAPI.setToast({
+        message: `Export failed: ${err.message || "Unknown error"}`,
+      });
+    }
+  }, [excalidrawAPI]);
+
+  // --- Copy excalidraw file format guide ---
+
+  const copyExcalidrawGuide = useCallback(() => {
+    const guide = `# .excalidraw 文件格式说明
+
+.excalidraw 文件是 JSON 格式，结构如下：
+
+\`\`\`json
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "...",
+  "elements": [...],   // 所有绘图元素
+  "appState": {...},    // 编辑器状态（视口、主题等）
+  "files": {...}        // 嵌入的图片等二进制资源（base64）
+}
+\`\`\`
+
+## elements 数组
+
+每个元素是一个对象，常见属性：
+
+| 属性 | 说明 |
+|------|------|
+| id | 唯一标识符（nanoid） |
+| type | 元素类型：rectangle, ellipse, diamond, line, arrow, text, freedraw, image, frame, embeddable |
+| x, y | 左上角坐标 |
+| width, height | 宽高 |
+| angle | 旋转弧度 |
+| strokeColor | 边框颜色（如 "#1e1e1e"） |
+| backgroundColor | 填充颜色（如 "transparent"） |
+| fillStyle | 填充风格：hachure, cross-hatch, solid |
+| strokeWidth | 线宽：1（thin）, 2（bold）, 4（extra bold） |
+| roughness | 粗糙度：0（精确）, 1（手绘风格）, 2（更粗糙） |
+| opacity | 不透明度 0-100 |
+| groupIds | 所属分组 ID 数组 |
+| boundElements | 绑定的元素（如箭头绑定到矩形） |
+| isDeleted | 是否已删除（软删除） |
+| customData | 自定义元数据对象，可存放任意键值 |
+
+### text 元素额外属性
+- \`text\`: 文字内容
+- \`fontSize\`: 字号（默认 20）
+- \`fontFamily\`: 字体族 ID（1=Excalifont, 5=system-ui）
+- \`textAlign\`: left / center / right
+- \`verticalAlign\`: top / middle / bottom
+- \`containerId\`: 如果文字绑定在容器内，指向容器元素 id
+
+### line / arrow 额外属性
+- \`points\`: 点坐标数组 [[x,y], ...]，相对于元素 (x,y)
+- \`startBinding\` / \`endBinding\`: 箭头绑定的目标元素
+- \`startArrowhead\` / \`endArrowhead\`: null / "arrow" / "dot" / "bar"
+
+### image 元素额外属性
+- \`fileId\`: 对应 files 中的 key
+- \`scale\`: [scaleX, scaleY]
+
+## 修改指南
+
+1. **移动元素**：修改 x, y
+2. **调整大小**：修改 width, height
+3. **改颜色**：修改 strokeColor / backgroundColor
+4. **改文字**：修改 text 元素的 text 字段
+5. **添加元素**：向 elements 数组追加新对象，id 用 nanoid 生成（20 位字母数字）
+6. **删除元素**：设 isDeleted: true 或从数组中移除
+7. **分组**：给多个元素设相同的 groupIds
+8. **连接箭头**：设置 startBinding/endBinding 指向目标元素 id
+9. **version/versionNonce**：每次修改后递增 version，重新随机 versionNonce`;
+
+    copyToClipboard(guide);
+    excalidrawAPI?.setToast({ message: "excalidraw 文件说明已复制到剪贴板" });
+  }, [excalidrawAPI]);
+
+  // --- Save selection as template ---
+
+  const saveAsTemplate = useCallback(async () => {
+    if (!excalidrawAPI) {
+      return;
+    }
+    const appState = excalidrawAPI.getAppState();
+    const selectedIds = Object.keys(appState.selectedElementIds || {}).filter(
+      (id) => appState.selectedElementIds[id],
+    );
+    if (selectedIds.length === 0) {
+      excalidrawAPI.setToast({ message: "No elements selected" });
+      return;
+    }
+    const elements = excalidrawAPI
+      .getSceneElements()
+      .filter((el) => selectedIds.includes(el.id));
+
+    // Normalize positions to (0, 0)
+    const minX = Math.min(...elements.map((el) => el.x));
+    const minY = Math.min(...elements.map((el) => el.y));
+    const normalized = elements.map((el) => ({
+      ...el,
+      x: el.x - minX,
+      y: el.y - minY,
+    }));
+
+    const name = prompt("Template name:") || "Custom Template";
+    const id = randomId();
+    await saveCustomTemplate(id, name, "custom", JSON.stringify(normalized));
+    excalidrawAPI.setToast({ message: `Saved template: ${name}` });
+  }, [excalidrawAPI]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const ctrlOrCmd = e.metaKey || e.ctrlKey;
+      if (ctrlOrCmd && e.key === "o") {
+        e.preventDefault();
+        e.stopPropagation();
+        openFile();
+      } else if (ctrlOrCmd && e.shiftKey && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        e.stopPropagation();
+        saveFileAs();
+      } else if (ctrlOrCmd && e.key === "s") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (currentFilePathRef.current) {
+          saveFile();
+        } else {
+          saveFileAs();
+        }
+      } else if (ctrlOrCmd && e.shiftKey && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleAnnotationMode();
+      } else if (ctrlOrCmd && e.shiftKey && (e.key === "m" || e.key === "M")) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleDimensions();
+      } else if (ctrlOrCmd && e.shiftKey && e.key === "5") {
+        e.preventDefault();
+        e.stopPropagation();
+        captureScreenshot();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handleKeyDown, { capture: true });
+  }, [
+    openFile,
+    saveFile,
+    saveFileAs,
+    toggleAnnotationMode,
+    toggleDimensions,
+    captureScreenshot,
+  ]);
 
   const onChange = (
     elements: readonly OrderedExcalidrawElement[],
     appState: AppState,
     files: BinaryFiles,
   ) => {
+    // Auto-mark new text elements as markdown
+    const unmarkedTexts = elements.filter(
+      (el) =>
+        el.type === "text" &&
+        !el.isDeleted &&
+        el.customData?.markdown === undefined,
+    );
+    if (unmarkedTexts.length > 0 && excalidrawAPI) {
+      const allElements = excalidrawAPI
+        .getSceneElementsIncludingDeleted()
+        .map((el) => {
+          if (
+            el.type === "text" &&
+            !el.isDeleted &&
+            el.customData?.markdown === undefined
+          ) {
+            return newElementWith(el, {
+              customData: { ...el.customData, markdown: true },
+            });
+          }
+          return el;
+        });
+      excalidrawAPI.updateScene({
+        elements: allElements,
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+    }
+
     const nonDeleted = elements.filter((el) => !el.isDeleted);
     const sig = getElementsSignature(nonDeleted);
     if (sig !== savedSignatureRef.current) {
       setIsModified(true);
     }
+
+    // Update annotation count
+    setAnnotationCount(getAnnotationElementIds(nonDeleted).length);
 
     // Save to localStorage for crash recovery
     if (!LocalData.isSavePaused()) {
@@ -607,6 +1084,10 @@ const ExcalidrawWrapper = () => {
 
   return (
     <div style={{ height: "100%" }} className="excalidraw-app">
+      <DimensionOverlay
+        excalidrawAPI={excalidrawAPI}
+        visible={showDimensions}
+      />
       <Excalidraw
         excalidrawAPI={excalidrawRefCallback}
         onChange={onChange}
@@ -622,6 +1103,16 @@ const ExcalidrawWrapper = () => {
         }}
         langCode={langCode}
         renderCustomStats={renderCustomStats}
+        renderTopRightUI={() => (
+          <AnnotationToolbar
+            isActive={annotationMode}
+            onToggle={toggleAnnotationMode}
+            onAddAnnotation={addAnnotation}
+            onExportSummary={exportAnnotationSummary}
+            onClearAnnotations={clearAnnotations}
+            annotationCount={annotationCount}
+          />
+        )}
         detectScroll={false}
         handleKeyboardGlobally={true}
         autoFocus={true}
@@ -633,14 +1124,82 @@ const ExcalidrawWrapper = () => {
             predicate?: () => boolean;
           }[] = [];
           items.push({
-            label: "Copy File Path",
+            label: "复制文件路径",
             customAction: () => copyFilePath(),
             predicate: () => !!currentFilePathRef.current,
           });
+          items.push({
+            label: annotationMode ? "退出标注模式" : "进入标注模式",
+            customAction: () => toggleAnnotationMode(),
+          });
+          items.push({
+            label: "在此添加标注",
+            customAction: () => addAnnotation(),
+            predicate: () => annotationMode,
+          });
+          items.push({
+            label: "导出标注摘要",
+            customAction: () => exportAnnotationSummary(),
+            predicate: () => annotationCount > 0,
+          });
+
+          items.push({
+            label: showDimensions ? "隐藏尺寸标注" : "显示尺寸标注",
+            customAction: () => toggleDimensions(),
+          });
+
+          items.push({
+            label: "截图",
+            customAction: () => captureScreenshot(),
+          });
+          items.push({
+            label: "发送给 Claude Code",
+            customAction: () => handleSendToClaudeCode(),
+          });
+          items.push({
+            label: "excalidraw 文件说明",
+            customAction: () => copyExcalidrawGuide(),
+          });
+
           if (type === "element") {
             items.push({
-              label: "Copy Element IDs",
+              label: "复制元素 ID",
               customAction: () => copyElementIds(),
+            });
+            items.push({
+              label: "切换 Markdown",
+              customAction: () => toggleMarkdown(),
+              predicate: () => {
+                if (!excalidrawAPI) {
+                  return false;
+                }
+                const state = excalidrawAPI.getAppState();
+                const selectedIds = Object.keys(
+                  state.selectedElementIds || {},
+                ).filter((id) => state.selectedElementIds[id]);
+                return excalidrawAPI
+                  .getSceneElements()
+                  .some(
+                    (el) => selectedIds.includes(el.id) && el.type === "text",
+                  );
+              },
+            });
+            items.push({
+              label: "固化尺寸",
+              customAction: () => solidifyDimensions(),
+              predicate: () => {
+                if (!excalidrawAPI) {
+                  return false;
+                }
+                const state = excalidrawAPI.getAppState();
+                return Object.values(state.selectedElementIds || {}).some(
+                  Boolean,
+                );
+              },
+            });
+            items.push({
+              label: "保存为模板",
+              customAction: () => saveAsTemplate(),
             });
           }
           return items;
@@ -672,6 +1231,7 @@ const ExcalidrawWrapper = () => {
         </OverwriteConfirmDialog>
 
         <TTDDialogTrigger />
+        <UITemplatesSidebar excalidrawAPI={excalidrawAPI} />
         {localStorageQuotaExceeded && (
           <div className="alert alert--danger">
             {t("alerts.localStorageQuotaExceeded")}
@@ -687,15 +1247,15 @@ const ExcalidrawWrapper = () => {
         <CommandPalette
           customCommandPaletteItems={[
             {
-              label: "Open File",
+              label: "打开文件",
               category: DEFAULT_CATEGORIES.app,
-              keywords: ["open", "load", "file", "import"],
+              keywords: ["open", "load", "file", "打开"],
               perform: () => openFile(),
             },
             {
-              label: "Save",
+              label: "保存",
               category: DEFAULT_CATEGORIES.app,
-              keywords: ["save", "file", "export"],
+              keywords: ["save", "file", "保存"],
               perform: () => {
                 if (currentFilePath) {
                   saveFile();
@@ -705,22 +1265,82 @@ const ExcalidrawWrapper = () => {
               },
             },
             {
-              label: "Save As",
+              label: "另存为",
               category: DEFAULT_CATEGORIES.app,
-              keywords: ["save", "as", "file", "export", "new"],
+              keywords: ["save", "as", "file", "另存为"],
               perform: () => saveFileAs(),
             },
             {
-              label: "Copy File Path",
+              label: "复制文件路径",
               category: DEFAULT_CATEGORIES.app,
-              keywords: ["copy", "path", "file", "mcp", "claude"],
+              keywords: ["copy", "path", "file", "复制", "路径"],
               perform: () => copyFilePath(),
             },
             {
-              label: "Copy Element IDs",
+              label: "复制元素 ID",
               category: DEFAULT_CATEGORIES.app,
-              keywords: ["copy", "id", "element", "mcp", "claude", "selected"],
+              keywords: ["copy", "id", "element", "复制", "元素"],
               perform: () => copyElementIds(),
+            },
+            {
+              label: "切换 Markdown",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["markdown", "md", "render", "切换"],
+              perform: () => toggleMarkdown(),
+            },
+            {
+              label: "切换标注模式",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["annotate", "annotation", "标注", "模式"],
+              perform: () => toggleAnnotationMode(),
+            },
+            {
+              label: "添加标注",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["annotate", "add", "添加", "标注"],
+              perform: () => addAnnotation(),
+            },
+            {
+              label: "导出标注摘要",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["export", "annotation", "summary", "导出", "摘要"],
+              perform: () => exportAnnotationSummary(),
+            },
+            {
+              label: "清除所有标注",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["clear", "annotation", "清除", "标注"],
+              perform: () => clearAnnotations(),
+            },
+            {
+              label: "切换尺寸标注",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["dimension", "size", "measure", "尺寸", "标注"],
+              perform: () => toggleDimensions(),
+            },
+            {
+              label: "固化尺寸",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["dimension", "solidify", "固化", "尺寸"],
+              perform: () => solidifyDimensions(),
+            },
+            {
+              label: "截图",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["screenshot", "capture", "截图"],
+              perform: () => captureScreenshot(),
+            },
+            {
+              label: "发送给 Claude Code",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["claude", "code", "send", "发送"],
+              perform: () => handleSendToClaudeCode(),
+            },
+            {
+              label: "保存为模板",
+              category: DEFAULT_CATEGORIES.app,
+              keywords: ["template", "save", "模板", "保存"],
+              perform: () => saveAsTemplate(),
             },
             {
               label: "GitHub",
