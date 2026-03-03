@@ -76,9 +76,8 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.NOTARIZE_APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: "D9V25D8RBJ"
         run: |
-          yarn --cwd ./desktop-app exec tauri build \
-            --target universal-apple-darwin \
-            --bundles dmg
+          cd desktop-app
+          yarn exec tauri build --target universal-apple-darwin --bundles dmg
 
       - name: Prepare release artifact
         id: artifact
