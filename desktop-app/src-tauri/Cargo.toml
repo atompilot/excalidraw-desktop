@@ -1,0 +1,27 @@
+[package]
+name = "excalidraw-desktop"
+version = "1.0.0"
+description = "Excalidraw Desktop Application"
+authors = ["Excalidraw"]
+edition = "2021"
+
+[lib]
+name = "excalidraw_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+tiny_http = "0.12"
+base64 = "0.22"
+rusqlite = { version = "0.31", features = ["bundled"] }

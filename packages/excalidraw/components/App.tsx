@@ -12074,98 +12074,106 @@ class App extends React.Component<AppProps, AppState> {
 
     options.push(actionCopyAsPng, actionCopyAsSvg);
 
+    let standardItems: ContextMenuItems;
+
     // canvas contextMenu
     // -------------------------------------------------------------------------
 
     if (type === "canvas") {
       if (this.state.viewModeEnabled) {
-        return [
+        standardItems = [
           ...options,
           actionToggleGridMode,
           actionToggleZenMode,
           actionToggleViewMode,
           actionToggleStats,
         ];
+      } else {
+        standardItems = [
+          actionPaste,
+          CONTEXT_MENU_SEPARATOR,
+          actionCopyAsPng,
+          actionCopyAsSvg,
+          copyText,
+          CONTEXT_MENU_SEPARATOR,
+          actionSelectAll,
+          actionUnlockAllElements,
+          CONTEXT_MENU_SEPARATOR,
+          actionToggleGridMode,
+          actionToggleObjectsSnapMode,
+          actionToggleZenMode,
+          actionToggleViewMode,
+          actionToggleStats,
+        ];
       }
+    } else {
+      // element contextMenu
+      // -----------------------------------------------------------------------
 
-      return [
-        actionPaste,
-        CONTEXT_MENU_SEPARATOR,
-        actionCopyAsPng,
-        actionCopyAsSvg,
-        copyText,
-        CONTEXT_MENU_SEPARATOR,
-        actionSelectAll,
-        actionUnlockAllElements,
-        CONTEXT_MENU_SEPARATOR,
-        actionToggleGridMode,
-        actionToggleObjectsSnapMode,
-        actionToggleZenMode,
-        actionToggleViewMode,
-        actionToggleStats,
-      ];
+      options.push(copyText);
+
+      if (this.state.viewModeEnabled) {
+        standardItems = [actionCopy, ...options];
+      } else {
+        const zIndexActions: ContextMenuItems =
+          this.editorInterface.formFactor === "desktop"
+            ? [
+                CONTEXT_MENU_SEPARATOR,
+                actionSendBackward,
+                actionBringForward,
+                actionSendToBack,
+                actionBringToFront,
+              ]
+            : [];
+
+        standardItems = [
+          CONTEXT_MENU_SEPARATOR,
+          actionCut,
+          actionCopy,
+          actionPaste,
+          CONTEXT_MENU_SEPARATOR,
+          actionSelectAllElementsInFrame,
+          actionRemoveAllElementsFromFrame,
+          actionWrapSelectionInFrame,
+          CONTEXT_MENU_SEPARATOR,
+          actionToggleCropEditor,
+          CONTEXT_MENU_SEPARATOR,
+          ...options,
+          CONTEXT_MENU_SEPARATOR,
+          actionCopyStyles,
+          actionPasteStyles,
+          CONTEXT_MENU_SEPARATOR,
+          actionGroup,
+          actionTextAutoResize,
+          actionUnbindText,
+          actionBindText,
+          actionWrapTextInContainer,
+          actionUngroup,
+          CONTEXT_MENU_SEPARATOR,
+          actionAddToLibrary,
+          ...zIndexActions,
+          CONTEXT_MENU_SEPARATOR,
+          actionFlipHorizontal,
+          actionFlipVertical,
+          CONTEXT_MENU_SEPARATOR,
+          actionToggleLinearEditor,
+          CONTEXT_MENU_SEPARATOR,
+          actionLink,
+          actionCopyElementLink,
+          CONTEXT_MENU_SEPARATOR,
+          actionDuplicateSelection,
+          actionToggleElementLock,
+          CONTEXT_MENU_SEPARATOR,
+          actionDeleteSelected,
+        ];
+      }
     }
 
-    // element contextMenu
-    // -------------------------------------------------------------------------
-
-    options.push(copyText);
-
-    if (this.state.viewModeEnabled) {
-      return [actionCopy, ...options];
+    const customItems = this.props.customContextMenuItems?.(type) ?? [];
+    if (customItems.length > 0) {
+      return [...standardItems, CONTEXT_MENU_SEPARATOR, ...customItems];
     }
-
-    const zIndexActions: ContextMenuItems =
-      this.editorInterface.formFactor === "desktop"
-        ? [
-            CONTEXT_MENU_SEPARATOR,
-            actionSendBackward,
-            actionBringForward,
-            actionSendToBack,
-            actionBringToFront,
-          ]
-        : [];
-
-    return [
-      CONTEXT_MENU_SEPARATOR,
-      actionCut,
-      actionCopy,
-      actionPaste,
-      CONTEXT_MENU_SEPARATOR,
-      actionSelectAllElementsInFrame,
-      actionRemoveAllElementsFromFrame,
-      actionWrapSelectionInFrame,
-      CONTEXT_MENU_SEPARATOR,
-      actionToggleCropEditor,
-      CONTEXT_MENU_SEPARATOR,
-      ...options,
-      CONTEXT_MENU_SEPARATOR,
-      actionCopyStyles,
-      actionPasteStyles,
-      CONTEXT_MENU_SEPARATOR,
-      actionGroup,
-      actionTextAutoResize,
-      actionUnbindText,
-      actionBindText,
-      actionWrapTextInContainer,
-      actionUngroup,
-      CONTEXT_MENU_SEPARATOR,
-      actionAddToLibrary,
-      ...zIndexActions,
-      CONTEXT_MENU_SEPARATOR,
-      actionFlipHorizontal,
-      actionFlipVertical,
-      CONTEXT_MENU_SEPARATOR,
-      actionToggleLinearEditor,
-      CONTEXT_MENU_SEPARATOR,
-      actionLink,
-      actionCopyElementLink,
-      CONTEXT_MENU_SEPARATOR,
-      actionDuplicateSelection,
-      actionToggleElementLock,
-      CONTEXT_MENU_SEPARATOR,
-      actionDeleteSelected,
-    ];
+    return standardItems;
   };
 
   private handleWheel = withBatchedUpdates(

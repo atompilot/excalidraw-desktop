@@ -1,0 +1,20 @@
+{
+  "name": "excalidraw-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server for creating and manipulating Excalidraw files",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "nanoid": "^5.1.5",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "@types/node": "^22.15.3"
+  }
+}

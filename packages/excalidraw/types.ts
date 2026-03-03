@@ -632,6 +632,15 @@ export interface ExcalidrawProps {
   aiEnabled?: boolean;
   showDeprecatedFonts?: boolean;
   renderScrollbars?: boolean;
+  customContextMenuItems?: (
+    type: "canvas" | "element",
+  ) => (
+    | import("./components/ContextMenu").CustomContextMenuAction
+    | "separator"
+    | false
+    | null
+    | undefined
+  )[];
 }
 
 export type SceneData = {

@@ -9,3 +9,6 @@ packages/excalidraw/types
 examples/**/public
 dev-dist
 coverage
+desktop-app/src-tauri/target
+desktop-app/mcp-server/dist
+desktop-app/mcp-server/node_modules

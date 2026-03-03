@@ -16,7 +16,17 @@ import type { Action } from "../actions/types";
 
 import type { TranslationKeys } from "../i18n";
 
-export type ContextMenuItem = typeof CONTEXT_MENU_SEPARATOR | Action;
+export interface CustomContextMenuAction {
+  label: string;
+  customAction: () => void;
+  predicate?: () => boolean;
+  shortcutLabel?: string;
+}
+
+export type ContextMenuItem =
+  | typeof CONTEXT_MENU_SEPARATOR
+  | Action
+  | CustomContextMenuAction;
 
 export type ContextMenuItems = (ContextMenuItem | false | null | undefined)[];
 
@@ -36,16 +46,23 @@ export const ContextMenu = React.memo(
     const elements = useExcalidrawElements();
 
     const filteredItems = items.reduce((acc: ContextMenuItem[], item) => {
-      if (
-        item &&
-        (item === CONTEXT_MENU_SEPARATOR ||
-          !item.predicate ||
-          item.predicate(
-            elements,
-            appState,
-            actionManager.app.props,
-            actionManager.app,
-          ))
+      if (!item) {
+        return acc;
+      }
+      if (item === CONTEXT_MENU_SEPARATOR) {
+        acc.push(item);
+      } else if ("customAction" in item) {
+        if (!item.predicate || item.predicate()) {
+          acc.push(item);
+        }
+      } else if (
+        !item.predicate ||
+        item.predicate(
+          elements,
+          appState,
+          actionManager.app.props,
+          actionManager.app,
+        )
       ) {
         acc.push(item);
       }
@@ -79,6 +96,26 @@ export const ContextMenu = React.memo(
                 return null;
               }
               return <hr key={idx} className="context-menu-item-separator" />;
+            }
+
+            if ("customAction" in item) {
+              return (
+                <li
+                  key={idx}
+                  onClick={() => {
+                    onClose(() => {
+                      item.customAction();
+                    });
+                  }}
+                >
+                  <button type="button" className="context-menu-item">
+                    <div className="context-menu-item__label">{item.label}</div>
+                    <kbd className="context-menu-item__shortcut">
+                      {item.shortcutLabel ?? ""}
+                    </kbd>
+                  </button>
+                </li>
+              );
             }
 
             const actionName = item.name;

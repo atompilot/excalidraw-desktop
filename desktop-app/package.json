@@ -1,0 +1,30 @@
+{
+  "name": "excalidraw-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "homepage": ".",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
+    "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-shell": "^2",
+    "i18next-browser-languagedetector": "6.1.4",
+    "idb-keyval": "6.0.3",
+    "jotai": "2.11.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "vite-plugin-html": "3.2.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  },
+  "scripts": {
+    "dev": "vite --port 3001",
+    "build": "vite build",
+    "tauri": "tauri"
+  }
+}
