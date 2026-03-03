@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../build",
     "devUrl": "http://localhost:3001",
-    "beforeDevCommand": "yarn dev",
-    "beforeBuildCommand": "yarn build"
+    "beforeDevCommand": "yarn exec vite -- --port 3001",
+    "beforeBuildCommand": "yarn exec vite -- build"
   },
   "app": {
     "windows": [
