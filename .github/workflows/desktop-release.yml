@@ -12,7 +12,7 @@ permissions:
 jobs:
   build-macos:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -48,36 +48,43 @@ jobs:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
         run: |
-          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
 
-          security create-keychain -p "" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "" build.keychain
-          security import /tmp/cert.p12 -k build.keychain \
-            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          echo "$MACOS_CERTIFICATE" | base64 --decode > $CERTIFICATE_PATH
+
+          # Create and configure keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate with ACL for codesign
+          security import $CERTIFICATE_PATH -P "$MACOS_CERTIFICATE_PWD" \
+            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
           security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "" build.keychain
+            -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
-          rm /tmp/cert.p12
+          # Add to keychain search list (critical for codesign to find it)
+          security list-keychain -d user -s $KEYCHAIN_PATH
 
-      - name: Detect signing identity
-        id: identity
-        run: |
-          SIGN_IDENTITY=$(security find-identity -v -p codesigning build.keychain \
-            | grep 'Developer ID Application' | head -1 \
-            | sed -E 's/.*"(Developer ID Application: [^"]+)".*/\1/')
-          echo "Detected: $SIGN_IDENTITY"
-          echo "identity=$SIGN_IDENTITY" >> $GITHUB_OUTPUT
+          rm $CERTIFICATE_PATH
+
+          # Export for cleanup step
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+          # Verify certificate is accessible
+          security find-identity -v -p codesigning $KEYCHAIN_PATH
 
       - name: Build Universal Binary .dmg
         env:
-          APPLE_SIGNING_IDENTITY: ${{ steps.identity.outputs.identity }}
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: Splat AI INC (D9V25D8RBJ)"
           APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.NOTARIZE_APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: "D9V25D8RBJ"
         run: |
           cd desktop-app
-          yarn exec tauri build --target universal-apple-darwin --bundles dmg
+          yarn exec tauri build --bundles dmg
 
       - name: Prepare release artifact
         id: artifact
@@ -113,4 +120,6 @@ jobs:
       - name: Cleanup keychain
         if: always()
         run: |
-          security delete-keychain build.keychain 2>/dev/null || true
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
